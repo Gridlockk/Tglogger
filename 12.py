@@ -7,10 +7,38 @@ TIME_OFFSET = 2
 
 
 # ---------- Настройки ----------
-api_id =           # твой api_id
-api_hash = ""    # твой api_hash
-session_name = "session"
+def load_credentials():
+    """Загружает api_id и api_hash из файла config.txt"""
+    config_file = "config.txt"
 
+    if not os.path.exists(config_file):
+        # Создаем файл с шаблоном, если его нет
+        with open(config_file, "w", encoding="utf-8") as f:
+            f.write("api_id=YOUR_API_ID\n")
+            f.write("api_hash=YOUR_API_HASH\n")
+        print(f"Создан файл {config_file}. Заполните его и перезапустите бот.")
+        exit(1)
+
+    config = {}
+    with open(config_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                key, value = line.split("=", 1)
+                config[key.strip()] = value.strip()
+
+    api_id = config.get("api_id")
+    api_hash = config.get("api_hash")
+
+    if not api_id or not api_hash or api_id == "YOUR_API_ID":
+        print("Ошибка: Заполните api_id и api_hash в файле config.txt")
+        exit(1)
+
+    return int(api_id), api_hash
+
+
+api_id, api_hash = load_credentials()
+session_name = "session"
 
 API_URL = "https://tgclientforlogger.mr-grids.workers.dev/"
 
@@ -25,18 +53,75 @@ MEDIA_TTL_DAYS = 2
 BASE = "data"
 MEDIA = f"{BASE}/media"
 MSG = f"{BASE}/messages"
+STATS_FILE = f"{BASE}/stats.json"
 
 os.makedirs(MEDIA, exist_ok=True)
 os.makedirs(MSG, exist_ok=True)
 
+
+# ---------- Статистика ----------
+def load_stats():
+    """Загружает статистику из файла"""
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "messages_saved": 0,
+        "media_saved": 0,
+        "messages_deleted": 0,
+        "last_reset": now_local()
+    }
+
+
+def save_stats(stats):
+    """Сохраняет статистику в файл"""
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+
+def increment_stat(key):
+    """Увеличивает счетчик статистики"""
+    stats = load_stats()
+    stats[key] = stats.get(key, 0) + 1
+    save_stats(stats)
+
+
+def get_folder_size(folder_path):
+    """Возвращает размер папки в байтах"""
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(folder_path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if os.path.exists(filepath):
+                total_size += os.path.getsize(filepath)
+    return total_size
+
+
+def format_size(bytes_size):
+    """Форматирует размер в человекочитаемый вид"""
+    for unit in ['Б', 'КБ', 'МБ', 'ГБ']:
+        if bytes_size < 1024.0:
+            return f"{bytes_size:.2f} {unit}"
+        bytes_size /= 1024.0
+    return f"{bytes_size:.2f} ТБ"
+
+
 # ---------- Клиент ----------
 client = TelegramClient(session_name, api_id, api_hash)
+
 
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+def now_local():
+    """Возвращает текущее локальное время как строку"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def is_expired(file_time, ttl_days):
     return datetime.now() - file_time > timedelta(days=ttl_days)
+
 
 # ---------- Сохраняем новые сообщения ----------
 @client.on(events.NewMessage)
@@ -51,15 +136,19 @@ async def save_message(event):
     if msg.photo:
         msg_type = "photo"
         media_path = await msg.download_media(file=MEDIA)
+        increment_stat("media_saved")
     elif msg.video:
         msg_type = "video"
         media_path = await msg.download_media(file=MEDIA)
+        increment_stat("media_saved")
     elif msg.voice:
         msg_type = "voice"
         media_path = await msg.download_media(file=MEDIA)
+        increment_stat("media_saved")
     elif msg.file:
         msg_type = "file"
         media_path = await msg.download_media(file=MEDIA)
+        increment_stat("media_saved")
 
     data = {
         "chat_id": msg.chat_id,
@@ -68,7 +157,7 @@ async def save_message(event):
         "type": msg_type,
         "text": msg.text,
         "media": media_path,
-         "sent_at": now_local(),
+        "sent_at": now_local(),
         "sender": {
             "id": msg.sender_id,
             "name": f"{getattr(sender, 'first_name', '')} {getattr(sender, 'last_name', '')}".strip(),
@@ -80,19 +169,26 @@ async def save_message(event):
     with open(f"{MSG}/{msg.chat_id}_{msg.id}.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
-
-def now_local():
-    """Возвращает текущее локальное время как строку"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    increment_stat("messages_saved")
 
 
 # ---------- Обработка удаления ----------
 @client.on(events.MessageDeleted)
 async def on_deleted(event):
     # Игнорируем сообщения из группы уведомлений, чтобы не рекурсить
-    if event.chat_id == NOTIFY_GROUP:
+    if hasattr(event, 'chat_id') and event.chat_id == NOTIFY_GROUP:
         return
+
+    # ПОЛНОЕ ЛОГИРОВАНИЕ события для теста
+    event_log = {
+        "event_type": "MessageDeleted",
+        "deleted_ids": event.deleted_ids,
+        "chat_id": getattr(event, 'chat_id', None),
+        "original": str(event.original_update),
+        "timestamp": now_local(),
+        "peer": str(getattr(event, 'peer', None)),
+        "channel_id": getattr(event, 'channel_id', None) if hasattr(event, 'channel_id') else None,
+    }
 
     for msg_id in event.deleted_ids:
         filename = None
@@ -125,21 +221,29 @@ async def on_deleted(event):
                 f"{data['text'] or '[без текста]'}"
             )
             media_path = data.get("media")
+            increment_stat("messages_deleted")
         else:
-            # JSON нет — минимальное уведомление
+            # JSON нет — выводим ВСЮ информацию из события
+            chat_info = f"Chat ID: {event_log['chat_id']}" if event_log['chat_id'] else "Chat ID: неизвестен"
+
             text = (
                 f"❌ УДАЛЁННОЕ СООБЩЕНИЕ\n\n"
                 f"🆔 Message ID: {msg_id}\n"
-                f"🗑 Время удаления: {now()}\n"
-                f"[Содержание локально отсутствует]"
+                f"💬 {chat_info}\n"
+                f"🗑 Время удаления: {now_local()}\n"
+                f"[Содержание локально отсутствует]\n\n"
+                f"📋 DEBUG INFO:\n"
+                f"```\n{json.dumps(event_log, ensure_ascii=False, indent=2)}\n```"
             )
             media_path = None
 
         # Отправляем уведомление в группу
-        await client.send_message(NOTIFY_GROUP, text)
-        if media_path and os.path.exists(media_path):
-            await client.send_file(NOTIFY_GROUP, media_path)
-
+        try:
+            await client.send_message(NOTIFY_GROUP, text)
+            if media_path and os.path.exists(media_path):
+                await client.send_file(NOTIFY_GROUP, media_path)
+        except Exception as e:
+            print(f"Ошибка отправки уведомления: {e}")
 
 
 def format_time_utc(dt):
@@ -177,7 +281,8 @@ async def cleanup_ttl():
 
         await asyncio.sleep(3600)  # Проверять каждый час
 
-#--------Чек сообщений------------
+
+# ---------- Чек сообщений ----------
 async def check_text(text: str) -> str:
     """Отправляем текст на API и получаем исправленный вариант"""
     async with aiohttp.ClientSession() as session:
@@ -186,6 +291,7 @@ async def check_text(text: str) -> str:
                 corrected = await resp.text()  # API возвращает plain text
                 return corrected.strip()
             return text
+
 
 @client.on(events.NewMessage())
 async def spellcheck(event):
@@ -211,12 +317,150 @@ async def spellcheck(event):
                 print("Не удалось изменить сообщение:", e)
 
 
-#------------------------------------------------
+# ---------- Ежедневная статистика ----------
+async def daily_stats_report():
+    """Отправляет ежедневный отчет в 00:00"""
+    while True:
+        now = datetime.now()
+        # Вычисляем время до следующей полуночи
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        wait_seconds = (tomorrow - now).total_seconds()
+
+        await asyncio.sleep(wait_seconds)
+
+        # Отправляем статистику
+        stats = load_stats()
+
+        report = (
+            f"📊 ЕЖЕДНЕВНАЯ СТАТИСТИКА\n\n"
+            f"📝 Сохранено сообщений: {stats.get('messages_saved', 0)}\n"
+            f"📎 Сохранено медиа: {stats.get('media_saved', 0)}\n"
+            f"🗑 Удалено сообщений: {stats.get('messages_deleted', 0)}\n\n"
+            f"🕐 Отчет за: {(datetime.now() - timedelta(days=1)).strftime('%d.%m.%Y')}"
+        )
+
+        try:
+            await client.send_message(NOTIFY_GROUP, report)
+        except Exception as e:
+            print(f"Ошибка отправки ежедневной статистики: {e}")
+
+        # Сбрасываем счетчики
+        stats["messages_saved"] = 0
+        stats["media_saved"] = 0
+        stats["messages_deleted"] = 0
+        stats["last_reset"] = now_local()
+        save_stats(stats)
+
+
+# ---------- Команды ----------
+@client.on(events.NewMessage(pattern=r'^\.ch$', outgoing=True))
+async def check_size_command(event):
+    """Команда .ch - показывает размер папки с сохраненками"""
+    try:
+        total_size = get_folder_size(BASE)
+        msg_count = len([f for f in os.listdir(MSG) if f.endswith('.json')])
+        media_count = len(os.listdir(MEDIA))
+
+        response = (
+            f"💾 РАЗМЕР СОХРАНЕНОК\n\n"
+            f"📊 Общий размер: {format_size(total_size)}\n"
+            f"📝 Сообщений: {msg_count}\n"
+            f"📎 Медиафайлов: {media_count}\n"
+            f"📁 Папка сообщений: {format_size(get_folder_size(MSG))}\n"
+            f"🎬 Папка медиа: {format_size(get_folder_size(MEDIA))}"
+        )
+
+        await event.edit(response)
+    except Exception as e:
+        await event.edit(f"❌ Ошибка: {e}")
+
+
+@client.on(events.NewMessage(pattern=r'^\.d\s+(.+)$', outgoing=True))
+async def delete_old_command(event):
+    """Команда .d [дата] - удаляет файлы старше указанной даты"""
+    try:
+        date_str = event.pattern_match.group(1).strip()
+
+        # Парсим дату
+        try:
+            # Пробуем формат DD.MM или DD.MM.YYYY
+            if len(date_str.split('.')) == 2:
+                day, month = date_str.split('.')
+                cutoff_date = datetime(datetime.now().year, int(month), int(day))
+            else:
+                day, month, year = date_str.split('.')
+                cutoff_date = datetime(int(year), int(month), int(day))
+        except:
+            await event.edit("❌ Неверный формат даты. Используйте: .d DD.MM или .d DD.MM.YYYY")
+            return
+
+        # Проверка: дата не в будущем
+        if cutoff_date > datetime.now():
+            await event.edit("❌ Дата не может быть в будущем!")
+            return
+
+        deleted_msgs = 0
+        deleted_media = 0
+
+        # Удаляем сообщения
+        for file in os.listdir(MSG):
+            path = os.path.join(MSG, file)
+            if os.path.isfile(path):
+                file_time = datetime.fromtimestamp(os.path.getmtime(path))
+                if file_time < cutoff_date:
+                    os.remove(path)
+                    deleted_msgs += 1
+
+        # Удаляем медиа
+        for file in os.listdir(MEDIA):
+            path = os.path.join(MEDIA, file)
+            if os.path.isfile(path):
+                file_time = datetime.fromtimestamp(os.path.getmtime(path))
+                if file_time < cutoff_date:
+                    os.remove(path)
+                    deleted_media += 1
+
+        response = (
+            f"🗑 ОЧИСТКА ЗАВЕРШЕНА\n\n"
+            f"📅 Удалено до: {cutoff_date.strftime('%d.%m.%Y')}\n"
+            f"📝 Сообщений удалено: {deleted_msgs}\n"
+            f"📎 Медиафайлов удалено: {deleted_media}\n"
+            f"✅ Всего удалено: {deleted_msgs + deleted_media}"
+        )
+
+        await event.edit(response)
+    except Exception as e:
+        await event.edit(f"❌ Ошибка: {e}")
+
+
+@client.on(events.NewMessage(pattern=r'^\.p$', outgoing=True))
+async def ping_command(event):
+    """Команда .p - проверка что бот жив"""
+    uptime_start = datetime.now() - timedelta(seconds=int(asyncio.get_event_loop().time()))
+    stats = load_stats()
+
+    response = (
+        f"✅ БОТ АКТИВЕН\n\n"
+        f"⏰ Время: {now_local()}\n"
+        f"📊 Сохранено сегодня:\n"
+        f"  📝 Сообщений: {stats.get('messages_saved', 0)}\n"
+        f"  📎 Медиа: {stats.get('media_saved', 0)}\n"
+        f"  🗑 Удалено: {stats.get('messages_deleted', 0)}\n"
+        f"🔄 Последний сброс: {stats.get('last_reset', 'N/A')}"
+    )
+
+    await event.edit(response)
+
+
 # ---------- Запуск ----------
 async def main():
     asyncio.create_task(cleanup_ttl())  # TTL-очистка в фоне
+    asyncio.create_task(daily_stats_report())  # Ежедневная статистика
     await client.start()
     print("Логгер запущен...")
+    print(f"API ID: {api_id}")
+    print(f"Команды: .ch, .d [дата], .p")
     await client.run_until_disconnected()
+
 
 asyncio.run(main())
