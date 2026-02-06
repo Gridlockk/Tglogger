@@ -42,8 +42,29 @@ session_name = "session"
 
 API_URL = "https://tgclientforlogger.mr-grids.workers.dev/"
 
-# ID группы для уведомлений
-NOTIFY_GROUP = -5140405534  # замените на свой ID или username
+# ID группы для уведомлений (по умолчанию - избранное, т.е. "me")
+NOTIFY_GROUP_FILE = "data/notify_group.txt"
+
+
+def get_notify_group():
+    """Получает ID группы для уведомлений из файла или возвращает 'me' (избранное)"""
+    if os.path.exists(NOTIFY_GROUP_FILE):
+        with open(NOTIFY_GROUP_FILE, "r", encoding="utf-8") as f:
+            value = f.read().strip()
+            if value.lower() == "me":
+                return "me"
+            try:
+                return int(value)
+            except:
+                return "me"
+    return "me"
+
+
+def set_notify_group(chat_id):
+    """Сохраняет ID группы для уведомлений в файл"""
+    with open(NOTIFY_GROUP_FILE, "w", encoding="utf-8") as f:
+        f.write(str(chat_id))
+
 
 # TTL
 TEXT_TTL_DAYS = 5
@@ -175,8 +196,10 @@ async def save_message(event):
 # ---------- Обработка удаления ----------
 @client.on(events.MessageDeleted)
 async def on_deleted(event):
+    notify_group = get_notify_group()
+
     # Игнорируем сообщения из группы уведомлений, чтобы не рекурсить
-    if hasattr(event, 'chat_id') and event.chat_id == NOTIFY_GROUP:
+    if hasattr(event, 'chat_id') and event.chat_id == notify_group:
         return
 
     # ПОЛНОЕ ЛОГИРОВАНИЕ события для теста
@@ -239,9 +262,9 @@ async def on_deleted(event):
 
         # Отправляем уведомление в группу
         try:
-            await client.send_message(NOTIFY_GROUP, text)
+            await client.send_message(notify_group, text)
             if media_path and os.path.exists(media_path):
-                await client.send_file(NOTIFY_GROUP, media_path)
+                await client.send_file(notify_group, media_path)
         except Exception as e:
             print(f"Ошибка отправки уведомления: {e}")
 
@@ -330,6 +353,7 @@ async def daily_stats_report():
 
         # Отправляем статистику
         stats = load_stats()
+        notify_group = get_notify_group()
 
         report = (
             f"📊 ЕЖЕДНЕВНАЯ СТАТИСТИКА\n\n"
@@ -340,7 +364,7 @@ async def daily_stats_report():
         )
 
         try:
-            await client.send_message(NOTIFY_GROUP, report)
+            await client.send_message(notify_group, report)
         except Exception as e:
             print(f"Ошибка отправки ежедневной статистики: {e}")
 
@@ -353,6 +377,115 @@ async def daily_stats_report():
 
 
 # ---------- Команды ----------
+@client.on(events.NewMessage(pattern=r'^\.help$', outgoing=True))
+async def help_command(event):
+    """Команда .help - показывает список всех команд"""
+    help_text = (
+        "📋 СПИСОК КОМАНД БОТА\n\n"
+        "🔹 .help - показать это сообщение\n"
+        "🔹 .p - проверка статуса бота (ping)\n"
+        "🔹 .ch - показать размер сохраненных данных\n"
+        "🔹 .d [дата] - удалить файлы старше даты\n"
+        "   Формат: .d DD.MM или .d DD.MM.YYYY\n"
+        "   Пример: .d 15.01 или .d 15.01.2024\n"
+        "🔹 .delete [число] - удалить последние N своих сообщений\n"
+        "   Пример: .delete 5\n"
+        "🔹 .chatSet [ID] - установить чат для уведомлений\n"
+        "   Без параметра - отправка в избранное\n"
+        "   Пример: .chatSet -1001234567890\n\n"
+        "💡 Автофункции:\n"
+        "• Сообщения с точкой в конце - автопроверка орфографии\n"
+        "• Автосохранение всех сообщений\n"
+        "• Уведомления об удаленных сообщениях\n"
+        "• Ежедневная статистика в 00:00"
+    )
+    await event.edit(help_text)
+
+
+@client.on(events.NewMessage(pattern=r'^\.delete\s+(\d+)$', outgoing=True))
+async def delete_messages_command(event):
+    """Команда .delete [число] - удаляет последние N своих сообщений в текущем чате"""
+    try:
+        count = int(event.pattern_match.group(1))
+
+        if count <= 0:
+            await event.edit("❌ Число должно быть больше 0")
+            return
+
+        if count > 100:
+            await event.edit("❌ Максимум можно удалить 100 сообщений за раз")
+            return
+
+        chat = await event.get_chat()
+
+        # Получаем последние сообщения в чате
+        messages_to_delete = []
+        async for message in client.iter_messages(chat, limit=count + 1):  # +1 для команды
+            if message.out:  # Только наши сообщения
+                messages_to_delete.append(message.id)
+
+        # Удаляем команду из списка
+        if event.message.id in messages_to_delete:
+            messages_to_delete.remove(event.message.id)
+
+        # Ограничиваем количество
+        messages_to_delete = messages_to_delete[:count]
+
+        if not messages_to_delete:
+            await event.edit("❌ Нет сообщений для удаления")
+            return
+
+        # Удаляем команду
+        await event.delete()
+
+        # Удаляем сообщения
+        await client.delete_messages(chat, messages_to_delete)
+
+    except Exception as e:
+        await event.edit(f"❌ Ошибка: {e}")
+
+@client.on(events.NewMessage(pattern=r'^\.chatSet(?:\s+(.+))?$', outgoing=True))
+async def chatset_command(event):
+    """Команда .chatSet - устанавливает чат для уведомлений о удаленных сообщениях"""
+    try:
+        param = event.pattern_match.group(1)
+
+        if param:
+            param = param.strip()
+            # Если параметр - число, используем как chat_id
+            try:
+                chat_id = int(param)
+                set_notify_group(chat_id)
+
+                # Пробуем получить информацию о чате
+                try:
+                    chat = await client.get_entity(chat_id)
+                    chat_name = getattr(chat, 'title', getattr(chat, 'first_name', f'Chat {chat_id}'))
+                    response = f"✅ Чат для уведомлений установлен:\n📍 {chat_name} (ID: {chat_id})"
+                except:
+                    response = f"✅ Чат для уведомлений установлен:\n📍 ID: {chat_id}"
+
+            except ValueError:
+                # Если не число, пробуем как username
+                try:
+                    chat = await client.get_entity(param)
+                    chat_id = chat.id
+                    set_notify_group(chat_id)
+                    chat_name = getattr(chat, 'title', getattr(chat, 'first_name', param))
+                    response = f"✅ Чат для уведомлений установлен:\n📍 {chat_name} (ID: {chat_id})"
+                except:
+                    response = f"❌ Не удалось найти чат: {param}"
+        else:
+            # Без параметра - устанавливаем избранное
+            set_notify_group("me")
+            response = "✅ Уведомления будут отправляться в избранное"
+
+        await event.edit(response)
+
+    except Exception as e:
+        await event.edit(f"❌ Ошибка: {e}")
+
+
 @client.on(events.NewMessage(pattern=r'^\.ch$', outgoing=True))
 async def check_size_command(event):
     """Команда .ch - показывает размер папки с сохраненками"""
@@ -438,6 +571,17 @@ async def ping_command(event):
     """Команда .p - проверка что бот жив"""
     uptime_start = datetime.now() - timedelta(seconds=int(asyncio.get_event_loop().time()))
     stats = load_stats()
+    notify_group = get_notify_group()
+
+    # Определяем название чата уведомлений
+    if notify_group == "me":
+        notify_name = "Избранное"
+    else:
+        try:
+            chat = await client.get_entity(notify_group)
+            notify_name = getattr(chat, 'title', getattr(chat, 'first_name', f'ID: {notify_group}'))
+        except:
+            notify_name = f'ID: {notify_group}'
 
     response = (
         f"✅ БОТ АКТИВЕН\n\n"
@@ -446,7 +590,8 @@ async def ping_command(event):
         f"  📝 Сообщений: {stats.get('messages_saved', 0)}\n"
         f"  📎 Медиа: {stats.get('media_saved', 0)}\n"
         f"  🗑 Удалено: {stats.get('messages_deleted', 0)}\n"
-        f"🔄 Последний сброс: {stats.get('last_reset', 'N/A')}"
+        f"🔄 Последний сброс: {stats.get('last_reset', 'N/A')}\n"
+        f"📢 Уведомления: {notify_name}"
     )
 
     await event.edit(response)
@@ -459,7 +604,7 @@ async def main():
     await client.start()
     print("Логгер запущен...")
     print(f"API ID: {api_id}")
-    print(f"Команды: .ch, .d [дата], .p")
+    print(f"Команды: .help, .ch, .d [дата], .p, .delete [число], .chatSet [ID]")
     await client.run_until_disconnected()
 
 
