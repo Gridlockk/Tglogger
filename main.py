@@ -8,7 +8,7 @@ TIME_OFFSET = 2
 
 # ---------- Настройки ----------
 def load_credentials():
-    """Загружает api_id и api_hash из файла config.txt"""
+
     config_file = "config.txt"
 
     if not os.path.exists(config_file):
@@ -42,12 +42,12 @@ session_name = "session"
 
 API_URL = "https://tgclientforlogger.mr-grids.workers.dev/"
 
-# ID группы для уведомлений (по умолчанию - избранное, т.е. "me")
+
 NOTIFY_GROUP_FILE = "data/notify_group.txt"
 
 
 def get_notify_group():
-    """Получает ID группы для уведомлений из файла или возвращает 'me' (избранное)"""
+
     if os.path.exists(NOTIFY_GROUP_FILE):
         with open(NOTIFY_GROUP_FILE, "r", encoding="utf-8") as f:
             value = f.read().strip()
@@ -61,7 +61,7 @@ def get_notify_group():
 
 
 def set_notify_group(chat_id):
-    """Сохраняет ID группы для уведомлений в файл"""
+
     with open(NOTIFY_GROUP_FILE, "w", encoding="utf-8") as f:
         f.write(str(chat_id))
 
@@ -82,7 +82,7 @@ os.makedirs(MSG, exist_ok=True)
 
 # ---------- Статистика ----------
 def load_stats():
-    """Загружает статистику из файла"""
+
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -95,20 +95,20 @@ def load_stats():
 
 
 def save_stats(stats):
-    """Сохраняет статистику в файл"""
+
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
 
 def increment_stat(key):
-    """Увеличивает счетчик статистики"""
+
     stats = load_stats()
     stats[key] = stats.get(key, 0) + 1
     save_stats(stats)
 
 
 def get_folder_size(folder_path):
-    """Возвращает размер папки в байтах"""
+
     total_size = 0
     for dirpath, dirnames, filenames in os.walk(folder_path):
         for filename in filenames:
@@ -119,7 +119,7 @@ def get_folder_size(folder_path):
 
 
 def format_size(bytes_size):
-    """Форматирует размер в человекочитаемый вид"""
+
     for unit in ['Б', 'КБ', 'МБ', 'ГБ']:
         if bytes_size < 1024.0:
             return f"{bytes_size:.2f} {unit}"
@@ -136,7 +136,6 @@ def now():
 
 
 def now_local():
-    """Возвращает текущее локальное время как строку"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -270,7 +269,6 @@ async def on_deleted(event):
 
 
 def format_time_utc(dt):
-    """Преобразует datetime из UTC в локальное (+TIME_OFFSET часов) и возвращает строку."""
     if isinstance(dt, str):
         dt = datetime.fromisoformat(dt)
     return (dt + timedelta(hours=TIME_OFFSET)).strftime("%Y-%m-%d %H:%M:%S")
@@ -307,7 +305,6 @@ async def cleanup_ttl():
 
 # ---------- Чек сообщений ----------
 async def check_text(text: str) -> str:
-    """Отправляем текст на API и получаем исправленный вариант"""
     async with aiohttp.ClientSession() as session:
         async with session.post(API_URL, json={"text": text}) as resp:
             if resp.status == 200:
@@ -342,7 +339,6 @@ async def spellcheck(event):
 
 # ---------- Ежедневная статистика ----------
 async def daily_stats_report():
-    """Отправляет ежедневный отчет в 00:00"""
     while True:
         now = datetime.now()
         # Вычисляем время до следующей полуночи
@@ -379,7 +375,6 @@ async def daily_stats_report():
 # ---------- Команды ----------
 @client.on(events.NewMessage(pattern=r'^\.help$', outgoing=True))
 async def help_command(event):
-    """Команда .help - показывает список всех команд"""
     help_text = (
         "📋 СПИСОК КОМАНД БОТА\n\n"
         "🔹 .help - показать это сообщение\n"
@@ -404,7 +399,6 @@ async def help_command(event):
 
 @client.on(events.NewMessage(pattern=r'^\.delete\s+(\d+)$', outgoing=True))
 async def delete_messages_command(event):
-    """Команда .delete [число] - удаляет последние N своих сообщений в текущем чате"""
     try:
         count = int(event.pattern_match.group(1))
 
@@ -446,7 +440,6 @@ async def delete_messages_command(event):
 
 @client.on(events.NewMessage(pattern=r'^\.chatSet(?:\s+(.+))?$', outgoing=True))
 async def chatset_command(event):
-    """Команда .chatSet - устанавливает чат для уведомлений о удаленных сообщениях"""
     try:
         param = event.pattern_match.group(1)
 
@@ -488,7 +481,6 @@ async def chatset_command(event):
 
 @client.on(events.NewMessage(pattern=r'^\.ch$', outgoing=True))
 async def check_size_command(event):
-    """Команда .ch - показывает размер папки с сохраненками"""
     try:
         total_size = get_folder_size(BASE)
         msg_count = len([f for f in os.listdir(MSG) if f.endswith('.json')])
@@ -510,7 +502,6 @@ async def check_size_command(event):
 
 @client.on(events.NewMessage(pattern=r'^\.d\s+(.+)$', outgoing=True))
 async def delete_old_command(event):
-    """Команда .d [дата] - удаляет файлы старше указанной даты"""
     try:
         date_str = event.pattern_match.group(1).strip()
 
@@ -568,7 +559,6 @@ async def delete_old_command(event):
 
 @client.on(events.NewMessage(pattern=r'^\.p$', outgoing=True))
 async def ping_command(event):
-    """Команда .p - проверка что бот жив"""
     uptime_start = datetime.now() - timedelta(seconds=int(asyncio.get_event_loop().time()))
     stats = load_stats()
     notify_group = get_notify_group()
